@@ -2,28 +2,35 @@ import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.apache.poi.ss.usermodel.*;
 
 import java.io.*;
+import java.nio.file.*;
 
+/**
+ * Test data generator for Excel to CSV Extractor v25.0.1
+ * Creates sample Excel files for testing the extraction functionality.
+ */
 public class GenerateTestExcel {
 
     public static void main(String[] args) throws IOException {
-        String testDir = args.length > 0 ? args[0] : ".";
+        Path testDir = args.length > 0 ? Path.of(args[0]) : Path.of(".");
 
-        // Create test file with "Email" column (capitalized)
-        createExcel(testDir + "/test_emails.xlsx", "Email",
+        System.out.println("Generating test Excel files in: " + testDir.toAbsolutePath());
+
+        createExcel(testDir.resolve("test_emails.xlsx"), "Email",
             new String[]{"john@example.com", "jane@example.com", "bob@example.com"});
 
-        // Create test file with "EMAIL" column (uppercase)
-        createExcel(testDir + "/test_emails_upper.xlsx", "EMAIL",
+        createExcel(testDir.resolve("test_emails_upper.xlsx"), "EMAIL",
             new String[]{"alice@test.org", "charlie@test.org"});
 
-        // Create test file without email column (to test error logging)
-        createExcel(testDir + "/test_no_email.xlsx", "Name",
+        createExcel(testDir.resolve("test_no_email.xlsx"), "Name",
             new String[]{"John Doe", "Jane Smith"});
 
-        System.out.println("Test Excel files created in: " + testDir);
+        createExcelWithNumbers(testDir.resolve("test_with_numbers.xlsx"), "ID",
+            new long[]{1001, 1002, 1003, 1004});
+
+        System.out.println("Test Excel files created successfully.");
     }
 
-    private static void createExcel(String path, String columnName, String[] values) throws IOException {
+    private static void createExcel(Path path, String columnName, String[] values) throws IOException {
         try (Workbook workbook = new XSSFWorkbook()) {
             Sheet sheet = workbook.createSheet("Data");
 
@@ -35,9 +42,29 @@ public class GenerateTestExcel {
                 row.createCell(0).setCellValue(values[i]);
             }
 
-            try (FileOutputStream out = new FileOutputStream(path)) {
+            try (OutputStream out = Files.newOutputStream(path)) {
                 workbook.write(out);
             }
         }
+        System.out.println("  Created: " + path.getFileName());
+    }
+
+    private static void createExcelWithNumbers(Path path, String columnName, long[] values) throws IOException {
+        try (Workbook workbook = new XSSFWorkbook()) {
+            Sheet sheet = workbook.createSheet("Data");
+
+            Row header = sheet.createRow(0);
+            header.createCell(0).setCellValue(columnName);
+
+            for (int i = 0; i < values.length; i++) {
+                Row row = sheet.createRow(i + 1);
+                row.createCell(0).setCellValue(values[i]);
+            }
+
+            try (OutputStream out = Files.newOutputStream(path)) {
+                workbook.write(out);
+            }
+        }
+        System.out.println("  Created: " + path.getFileName());
     }
 }

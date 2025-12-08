@@ -7,145 +7,224 @@ import java.nio.file.*;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.stream.Collectors;
+import java.util.stream.StreamSupport;
 
+/**
+ * Excel to CSV Column Extractor v25.0.1
+ * Extracts a specified column from Excel files and saves to CSV format.
+ */
 public class ExcelToCsvExtractor {
+
+    private static final String VERSION = "25.0.1";
+    private static final String CSV_DELIMITER = ";";
 
     public static void main(String[] args) {
         if (args.length < 2) {
-            System.out.println("Usage: java -jar excel-to-csv.jar <column-name> <folder-path>");
+            printUsage();
             System.exit(1);
         }
 
         String columnName = args[0];
-        String folderPath = args[1];
+        Path folderPath = Path.of(args[1]);
 
-        File folder = new File(folderPath);
-        if (!folder.isDirectory()) {
+        if (!Files.isDirectory(folderPath)) {
             System.err.println("Error: " + folderPath + " is not a valid directory");
             System.exit(1);
         }
 
-        File[] excelFiles = folder.listFiles((dir, name) ->
-            name.endsWith(".xlsx") || name.endsWith(".xls"));
+        processFolder(columnName, folderPath);
+    }
 
-        if (excelFiles == null || excelFiles.length == 0) {
+    private static void printUsage() {
+        System.out.println("Excel to CSV Extractor v" + VERSION);
+        System.out.println("Usage: java -jar excel-to-csv.jar <column-name> <folder-path>");
+        System.out.println();
+        System.out.println("Arguments:");
+        System.out.println("  column-name  Name of the column to extract (case-insensitive)");
+        System.out.println("  folder-path  Path to folder containing Excel files (.xlsx, .xls)");
+    }
+
+    private static void processFolder(String columnName, Path folderPath) {
+        List<Path> excelFiles = findExcelFiles(folderPath);
+
+        if (excelFiles.isEmpty()) {
             System.out.println("No Excel files found in " + folderPath);
             return;
         }
 
+        System.out.println("Found " + excelFiles.size() + " Excel file(s) to process");
         List<String> errors = new ArrayList<>();
 
-        for (File file : excelFiles) {
-            System.out.println("Processing: " + file.getName());
-            try {
-                List<String> values = extractColumn(file, columnName);
-                if (values == null) {
-                    String error = file.getName() + ": Column '" + columnName + "' not found";
-                    errors.add(error);
-                    System.err.println(error);
-                } else {
-                    writeCsv(file, values);
-                    System.out.println("Created CSV for: " + file.getName());
-                }
-            } catch (Exception e) {
-                String error = file.getName() + ": " + e.getMessage();
-                errors.add(error);
-                System.err.println(error);
-            }
+        for (Path file : excelFiles) {
+            processFile(file, columnName, errors);
         }
 
         if (!errors.isEmpty()) {
-            writeErrorLog(folder, errors);
+            writeErrorLog(folderPath, errors);
+        }
+
+        System.out.println("Processing complete. " + (excelFiles.size() - errors.size()) + " file(s) converted successfully.");
+    }
+
+    private static List<Path> findExcelFiles(Path folderPath) {
+        try (var stream = Files.list(folderPath)) {
+            return stream
+                .filter(Files::isRegularFile)
+                .filter(p -> {
+                    String name = p.getFileName().toString().toLowerCase();
+                    return name.endsWith(".xlsx") || name.endsWith(".xls");
+                })
+                .sorted()
+                .collect(Collectors.toList());
+        } catch (IOException e) {
+            System.err.println("Error reading directory: " + e.getMessage());
+            return Collections.emptyList();
         }
     }
 
-    private static List<String> extractColumn(File file, String columnName) throws IOException {
-        try (InputStream is = new FileInputStream(file);
+    private static void processFile(Path file, String columnName, List<String> errors) {
+        String fileName = file.getFileName().toString();
+        System.out.println("Processing: " + fileName);
+
+        try {
+            List<String> values = extractColumn(file, columnName);
+            if (values == null) {
+                String error = fileName + ": Column '" + columnName + "' not found";
+                errors.add(error);
+                System.err.println("  " + error);
+            } else {
+                writeCsv(file, values);
+                System.out.println("  Created CSV with " + values.size() + " row(s)");
+            }
+        } catch (Exception e) {
+            String error = fileName + ": " + e.getMessage();
+            errors.add(error);
+            System.err.println("  Error: " + e.getMessage());
+        }
+    }
+
+    private static List<String> extractColumn(Path file, String columnName) throws IOException {
+        try (InputStream is = Files.newInputStream(file);
              Workbook workbook = createWorkbook(file, is)) {
 
             Sheet sheet = workbook.getSheetAt(0);
             Row headerRow = sheet.getRow(0);
-            if (headerRow == null) return null;
+            if (headerRow == null) {
+                return null;
+            }
 
             int columnIndex = findColumnIndex(headerRow, columnName);
-            if (columnIndex == -1) return null;
+            if (columnIndex == -1) {
+                return null;
+            }
 
             List<String> values = new ArrayList<>();
-            for (int i = 1; i <= sheet.getLastRowNum(); i++) {
+            int lastRowNum = sheet.getLastRowNum();
+
+            for (int i = 1; i <= lastRowNum; i++) {
                 Row row = sheet.getRow(i);
                 if (row != null) {
                     Cell cell = row.getCell(columnIndex);
-                    values.add(getCellValue(cell));
+                    String value = getCellValue(cell);
+                    if (!value.isEmpty()) {
+                        values.add(value);
+                    }
                 }
             }
             return values;
         }
     }
 
-    private static Workbook createWorkbook(File file, InputStream is) throws IOException {
-        if (file.getName().endsWith(".xlsx")) {
+    private static Workbook createWorkbook(Path file, InputStream is) throws IOException {
+        String fileName = file.getFileName().toString().toLowerCase();
+        if (fileName.endsWith(".xlsx")) {
             return new XSSFWorkbook(is);
         }
         return new HSSFWorkbook(is);
     }
 
     private static int findColumnIndex(Row headerRow, String columnName) {
-        String[] variants = {
-            columnName.toLowerCase(),
-            columnName.toUpperCase(),
-            capitalize(columnName)
-        };
-
-        for (Cell cell : headerRow) {
-            String header = getCellValue(cell).trim();
-            for (String variant : variants) {
-                if (header.equalsIgnoreCase(variant)) {
-                    return cell.getColumnIndex();
-                }
-            }
-        }
-        return -1;
-    }
-
-    private static String capitalize(String str) {
-        if (str == null || str.isEmpty()) return str;
-        return str.substring(0, 1).toUpperCase() + str.substring(1).toLowerCase();
+        return StreamSupport.stream(headerRow.spliterator(), false)
+            .filter(cell -> getCellValue(cell).trim().equalsIgnoreCase(columnName))
+            .findFirst()
+            .map(Cell::getColumnIndex)
+            .orElse(-1);
     }
 
     private static String getCellValue(Cell cell) {
-        if (cell == null) return "";
+        if (cell == null) {
+            return "";
+        }
         return switch (cell.getCellType()) {
             case STRING -> cell.getStringCellValue();
-            case NUMERIC -> String.valueOf((long) cell.getNumericCellValue());
+            case NUMERIC -> {
+                double value = cell.getNumericCellValue();
+                if (value == Math.floor(value) && !Double.isInfinite(value)) {
+                    yield String.valueOf((long) value);
+                }
+                yield String.valueOf(value);
+            }
             case BOOLEAN -> String.valueOf(cell.getBooleanCellValue());
-            case FORMULA -> cell.getCellFormula();
+            case FORMULA -> evaluateFormula(cell);
+            case BLANK -> "";
             default -> "";
         };
     }
 
-    private static void writeCsv(File excelFile, List<String> values) throws IOException {
-        String csvName = excelFile.getName().replaceAll("\\.(xlsx|xls)$", ".csv");
-        File csvFile = new File(excelFile.getParent(), csvName);
+    private static String evaluateFormula(Cell cell) {
+        try {
+            FormulaEvaluator evaluator = cell.getSheet().getWorkbook().getCreationHelper().createFormulaEvaluator();
+            CellValue cellValue = evaluator.evaluate(cell);
+            return switch (cellValue.getCellType()) {
+                case STRING -> cellValue.getStringValue();
+                case NUMERIC -> String.valueOf((long) cellValue.getNumberValue());
+                case BOOLEAN -> String.valueOf(cellValue.getBooleanValue());
+                default -> cell.getCellFormula();
+            };
+        } catch (Exception e) {
+            return cell.getCellFormula();
+        }
+    }
 
-        try (PrintWriter writer = new PrintWriter(csvFile)) {
+    private static void writeCsv(Path excelFile, List<String> values) throws IOException {
+        String csvName = excelFile.getFileName().toString().replaceAll("\\.(xlsx|xls)$", ".csv");
+        Path csvFile = excelFile.getParent().resolve(csvName);
+
+        try (BufferedWriter writer = Files.newBufferedWriter(csvFile)) {
             for (String value : values) {
-                writer.println(value + ";");
+                writer.write(escapeCsvValue(value) + CSV_DELIMITER);
+                writer.newLine();
             }
         }
     }
 
-    private static void writeErrorLog(File folder, List<String> errors) {
-        String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
-        File logFile = new File(folder, "error_log_" + timestamp + ".txt");
+    private static String escapeCsvValue(String value) {
+        if (value.contains(CSV_DELIMITER) || value.contains("\"") || value.contains("\n")) {
+            return "\"" + value.replace("\"", "\"\"") + "\"";
+        }
+        return value;
+    }
 
-        try (PrintWriter writer = new PrintWriter(logFile)) {
-            writer.println("Excel to CSV Extraction Error Log");
-            writer.println("Generated: " + LocalDateTime.now());
-            writer.println("-----------------------------------");
+    private static void writeErrorLog(Path folder, List<String> errors) {
+        String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
+        Path logFile = folder.resolve("error_log_" + timestamp + ".txt");
+
+        try (BufferedWriter writer = Files.newBufferedWriter(logFile)) {
+            writer.write("Excel to CSV Extractor v" + VERSION + " - Error Log");
+            writer.newLine();
+            writer.write("Generated: " + LocalDateTime.now());
+            writer.newLine();
+            writer.write("=".repeat(50));
+            writer.newLine();
+            writer.newLine();
+
             for (String error : errors) {
-                writer.println(error);
+                writer.write("- " + error);
+                writer.newLine();
             }
-            System.out.println("Error log written to: " + logFile.getName());
+
+            System.out.println("Error log written to: " + logFile.getFileName());
         } catch (IOException e) {
             System.err.println("Failed to write error log: " + e.getMessage());
         }
