@@ -2,6 +2,11 @@ import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.apache.poi.hssf.usermodel.HSSFWorkbook;
 
+import javax.xml.parsers.DocumentBuilderFactory;
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.NodeList;
+
 import java.io.*;
 import java.nio.file.*;
 import java.time.LocalDateTime;
@@ -13,45 +18,94 @@ import java.util.stream.*;
 /**
  * Excel to CSV Column Extractor - Java 25.0.1
  * Extracts a specific column from Excel files and saves as CSV with semicolon separators.
+ * Supports: .xlsx (OOXML), .xls (BIFF), .xml (Office 2003 SpreadsheetML)
  * Uses virtual threads for concurrent file processing.
  */
 public class ExcelToCsvExtractor {
 
     private static final String CSV_SEPARATOR = ";";
+    private static final String CSV_FOLDER = "CSV";
+    private static final String LOGS_FOLDER = "logs";
 
     public sealed interface ExtractionResult permits ExtractionSuccess, ExtractionFailure {}
 
-    public record ExtractionSuccess(Path sourceFile, Path csvFile, int rowCount) implements ExtractionResult {}
+    public record ExtractionSuccess(Path sourceFile, Path csvFile, int rowCount, List<String> values) implements ExtractionResult {}
 
     public record ExtractionFailure(Path sourceFile, String errorMessage) implements ExtractionResult {}
 
     public record ColumnData(int index, String name) {}
 
+    public record AppConfig(String columnName, Path folderPath, boolean mergeOutput) {}
+
     public static void main(String[] args) {
-        if (args.length < 2) {
-            System.out.println("""
-                Usage: java -jar excel-to-csv.jar <column-name> <folder-path>
-
-                Arguments:
-                  column-name   The column header to extract (case-insensitive)
-                  folder-path   Path to folder containing Excel files
-
-                Example:
-                  java -jar excel-to-csv.jar email ./data
-                """);
+        var config = parseArguments(args);
+        if (config == null) {
             System.exit(1);
         }
 
-        var columnName = args[0];
-        var folderPath = Path.of(args[1]);
+        var results = processExcelFiles(config.folderPath(), config.columnName());
+        printResults(results, config.folderPath(), config.mergeOutput());
+    }
+
+    private static AppConfig parseArguments(String[] args) {
+        if (args.length < 2) {
+            printUsage();
+            return null;
+        }
+
+        boolean mergeOutput = false;
+        String columnName = null;
+        String folderPathStr = null;
+
+        for (int i = 0; i < args.length; i++) {
+            if (args[i].equals("--merge") || args[i].equals("-m")) {
+                mergeOutput = true;
+            } else if (columnName == null) {
+                columnName = args[i];
+            } else if (folderPathStr == null) {
+                folderPathStr = args[i];
+            }
+        }
+
+        if (columnName == null || folderPathStr == null) {
+            printUsage();
+            return null;
+        }
+
+        var folderPath = Path.of(folderPathStr);
 
         if (!Files.isDirectory(folderPath)) {
             System.err.println("Error: " + folderPath + " is not a valid directory");
-            System.exit(1);
+            return null;
         }
 
-        var results = processExcelFiles(folderPath, columnName);
-        printResults(results, folderPath);
+        return new AppConfig(columnName, folderPath, mergeOutput);
+    }
+
+    private static void printUsage() {
+        System.out.println("""
+            Usage: java -jar excel-to-csv.jar [options] <column-name> <folder-path>
+
+            Arguments:
+              column-name   The column header to extract (case-insensitive)
+              folder-path   Path to folder containing Excel files
+
+            Options:
+              --merge, -m   Generate a single merged CSV file containing all data
+
+            Supported formats:
+              .xlsx         Excel 2007+ (OOXML)
+              .xls          Excel 97-2003 (BIFF)
+              .xml          Office 2003 XML (SpreadsheetML)
+
+            Output:
+              CSV files are written to a 'CSV' subfolder
+              Logs are written to 'CSV/logs' subfolder
+
+            Example:
+              java -jar excel-to-csv.jar email ./data
+              java -jar excel-to-csv.jar --merge email ./data
+            """);
     }
 
     private static List<ExtractionResult> processExcelFiles(Path folder, String columnName) {
@@ -63,8 +117,12 @@ public class ExcelToCsvExtractor {
                 return List.of();
             }
 
+            // Create CSV output folder
+            var csvFolder = folder.resolve(CSV_FOLDER);
+            Files.createDirectories(csvFolder);
+
             var futures = excelFiles.stream()
-                .map(file -> executor.submit(() -> processFile(file, columnName)))
+                .map(file -> executor.submit(() -> processFile(file, columnName, csvFolder)))
                 .toList();
 
             return futures.stream()
@@ -83,7 +141,7 @@ public class ExcelToCsvExtractor {
                 .filter(Files::isRegularFile)
                 .filter(path -> {
                     var name = path.getFileName().toString().toLowerCase();
-                    return name.endsWith(".xlsx") || name.endsWith(".xls");
+                    return name.endsWith(".xlsx") || name.endsWith(".xls") || name.endsWith(".xml");
                 })
                 .toList();
         } catch (IOException e) {
@@ -100,9 +158,23 @@ public class ExcelToCsvExtractor {
         }
     }
 
-    private static ExtractionResult processFile(Path file, String columnName) {
+    private static ExtractionResult processFile(Path file, String columnName, Path csvFolder) {
         System.out.println("Processing: " + file.getFileName());
 
+        var fileName = file.getFileName().toString().toLowerCase();
+
+        try {
+            if (fileName.endsWith(".xml")) {
+                return processXmlSpreadsheet(file, columnName, csvFolder);
+            } else {
+                return processExcelFile(file, columnName, csvFolder);
+            }
+        } catch (Exception e) {
+            return new ExtractionFailure(file, e.getMessage());
+        }
+    }
+
+    private static ExtractionResult processExcelFile(Path file, String columnName, Path csvFolder) {
         try (var is = Files.newInputStream(file);
              var workbook = createWorkbook(file, is)) {
 
@@ -119,14 +191,130 @@ public class ExcelToCsvExtractor {
                 case null -> new ExtractionFailure(file, "Column '" + columnName + "' not found");
                 case ColumnData(var index, _) -> {
                     var values = extractColumnValues(sheet, index);
-                    var csvPath = writeCsv(file, values);
-                    yield new ExtractionSuccess(file, csvPath, values.size());
+                    var csvPath = writeCsv(file, values, csvFolder);
+                    yield new ExtractionSuccess(file, csvPath, values.size(), values);
                 }
             };
 
         } catch (IOException e) {
             return new ExtractionFailure(file, e.getMessage());
         }
+    }
+
+    private static ExtractionResult processXmlSpreadsheet(Path file, String columnName, Path csvFolder) {
+        try {
+            var factory = DocumentBuilderFactory.newInstance();
+            factory.setNamespaceAware(true);
+            var builder = factory.newDocumentBuilder();
+            var doc = builder.parse(Files.newInputStream(file));
+
+            // Find all Row elements
+            var rows = findXmlRows(doc);
+
+            if (rows.isEmpty()) {
+                return new ExtractionFailure(file, "No rows found in XML spreadsheet");
+            }
+
+            // First row is header
+            var headerRow = rows.get(0);
+            var headerCells = getXmlRowCells(headerRow);
+
+            var columnIndex = findXmlColumnIndex(headerCells, columnName);
+
+            if (columnIndex < 0) {
+                return new ExtractionFailure(file, "Column '" + columnName + "' not found");
+            }
+
+            // Extract values from data rows
+            var values = new ArrayList<String>();
+            for (int i = 1; i < rows.size(); i++) {
+                var cells = getXmlRowCells(rows.get(i));
+                if (columnIndex < cells.size()) {
+                    values.add(cells.get(columnIndex));
+                } else {
+                    values.add("");
+                }
+            }
+
+            var csvPath = writeCsv(file, values, csvFolder);
+            return new ExtractionSuccess(file, csvPath, values.size(), values);
+
+        } catch (Exception e) {
+            return new ExtractionFailure(file, "XML parsing error: " + e.getMessage());
+        }
+    }
+
+    private static List<Element> findXmlRows(Document doc) {
+        var rows = new ArrayList<Element>();
+
+        // Office 2003 SpreadsheetML uses ss:Row elements
+        var nodeList = doc.getElementsByTagNameNS("urn:schemas-microsoft-com:office:spreadsheet", "Row");
+        if (nodeList.getLength() == 0) {
+            // Try without namespace
+            nodeList = doc.getElementsByTagName("Row");
+        }
+
+        for (int i = 0; i < nodeList.getLength(); i++) {
+            if (nodeList.item(i) instanceof Element elem) {
+                rows.add(elem);
+            }
+        }
+
+        return rows;
+    }
+
+    private static List<String> getXmlRowCells(Element rowElement) {
+        var cells = new ArrayList<String>();
+
+        // Office 2003 SpreadsheetML uses ss:Cell and ss:Data elements
+        var cellNodes = rowElement.getElementsByTagNameNS("urn:schemas-microsoft-com:office:spreadsheet", "Cell");
+        if (cellNodes.getLength() == 0) {
+            cellNodes = rowElement.getElementsByTagName("Cell");
+        }
+
+        for (int i = 0; i < cellNodes.getLength(); i++) {
+            if (cellNodes.item(i) instanceof Element cellElem) {
+                // Check for ss:Index attribute (for sparse cells)
+                var indexAttr = cellElem.getAttributeNS("urn:schemas-microsoft-com:office:spreadsheet", "Index");
+                if (indexAttr != null && !indexAttr.isEmpty()) {
+                    int targetIndex = Integer.parseInt(indexAttr) - 1; // 1-based to 0-based
+                    while (cells.size() < targetIndex) {
+                        cells.add("");
+                    }
+                }
+
+                var dataNodes = cellElem.getElementsByTagNameNS("urn:schemas-microsoft-com:office:spreadsheet", "Data");
+                if (dataNodes.getLength() == 0) {
+                    dataNodes = cellElem.getElementsByTagName("Data");
+                }
+
+                if (dataNodes.getLength() > 0) {
+                    cells.add(dataNodes.item(0).getTextContent().trim());
+                } else {
+                    cells.add("");
+                }
+            }
+        }
+
+        return cells;
+    }
+
+    private static int findXmlColumnIndex(List<String> headerCells, String columnName) {
+        var variants = List.of(
+            columnName.toLowerCase(),
+            columnName.toUpperCase(),
+            capitalize(columnName)
+        );
+
+        for (int i = 0; i < headerCells.size(); i++) {
+            var header = headerCells.get(i).trim();
+            for (var variant : variants) {
+                if (header.equalsIgnoreCase(variant)) {
+                    return i;
+                }
+            }
+        }
+        return -1;
     }
 
     private static Workbook createWorkbook(Path file, InputStream is) throws IOException {
@@ -179,10 +367,10 @@ public class ExcelToCsvExtractor {
         };
     }
 
-    private static Path writeCsv(Path excelFile, List<String> values) throws IOException {
+    private static Path writeCsv(Path excelFile, List<String> values, Path csvFolder) throws IOException {
         var csvName = excelFile.getFileName().toString()
-            .replaceAll("\\.(xlsx|xls)$", ".csv");
-        var csvPath = excelFile.getParent().resolve(csvName);
+            .replaceAll("\\.(xlsx|xls|xml)$", ".csv");
+        var csvPath = csvFolder.resolve(csvName);
 
         var content = values.stream()
             .map(value -> value + CSV_SEPARATOR)
@@ -192,7 +380,7 @@ public class ExcelToCsvExtractor {
         return csvPath;
     }
 
-    private static void printResults(List<ExtractionResult> results, Path folder) {
+    private static void printResults(List<ExtractionResult> results, Path folder, boolean mergeOutput) {
         var successes = new ArrayList<ExtractionSuccess>();
         var failures = new ArrayList<ExtractionFailure>();
 
@@ -209,6 +397,11 @@ public class ExcelToCsvExtractor {
             }
         }
 
+        // Write merged CSV if requested
+        if (mergeOutput && !successes.isEmpty()) {
+            writeMergedCsv(folder, successes);
+        }
+
         if (!failures.isEmpty()) {
             writeErrorLog(folder, failures);
         }
@@ -221,9 +414,39 @@ public class ExcelToCsvExtractor {
             """.formatted(successes.size(), failures.size()));
     }
 
-    private static void writeErrorLog(Path folder, List<ExtractionFailure> failures) {
+    private static void writeMergedCsv(Path folder, List<ExtractionSuccess> successes) {
+        var csvFolder = folder.resolve(CSV_FOLDER);
         var timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
-        var logPath = folder.resolve("error_log_" + timestamp + ".txt");
+        var mergedPath = csvFolder.resolve("merged_" + timestamp + ".csv");
+
+        try {
+            var allValues = successes.stream()
+                .flatMap(s -> s.values().stream())
+                .toList();
+
+            var content = allValues.stream()
+                .map(value -> value + CSV_SEPARATOR)
+                .collect(Collectors.joining(System.lineSeparator()));
+
+            Files.writeString(mergedPath, content + System.lineSeparator());
+            System.out.println("Created merged CSV: " + mergedPath.getFileName() + " (" + allValues.size() + " total rows)");
+        } catch (IOException e) {
+            System.err.println("Failed to write merged CSV: " + e.getMessage());
+        }
+    }
+
+    private static void writeErrorLog(Path folder, List<ExtractionFailure> failures) {
+        var logsFolder = folder.resolve(CSV_FOLDER).resolve(LOGS_FOLDER);
+
+        try {
+            Files.createDirectories(logsFolder);
+        } catch (IOException e) {
+            System.err.println("Failed to create logs folder: " + e.getMessage());
+            return;
+        }
+
+        var timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
+        var logPath = logsFolder.resolve("error_log_" + timestamp + ".txt");
 
         var logContent = """
             Excel to CSV Extraction Error Log
@@ -239,7 +462,7 @@ public class ExcelToCsvExtractor {
 
         try {
             Files.writeString(logPath, logContent);
-            System.out.println("Error log written to: " + logPath.getFileName());
+            System.out.println("Error log written to: " + CSV_FOLDER + "/" + LOGS_FOLDER + "/" + logPath.getFileName());
         } catch (IOException e) {
             System.err.println("Failed to write error log: " + e.getMessage());
         }
