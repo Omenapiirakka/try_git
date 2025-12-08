@@ -38,13 +38,27 @@ public class ExcelToCsvExtractor {
     public record AppConfig(String columnName, Path folderPath, boolean mergeOutput) {}
 
     public static void main(String[] args) {
+        // Launch GUI if no arguments provided
+        if (args.length == 0) {
+            ExcelToCsvGui.launch();
+            return;
+        }
+
         var config = parseArguments(args);
         if (config == null) {
             System.exit(1);
         }
 
         var results = processExcelFiles(config.folderPath(), config.columnName());
-        printResults(results, config.folderPath(), config.mergeOutput());
+        handleResults(results, config.folderPath(), config.mergeOutput());
+    }
+
+    /**
+     * Handles extraction results - prints summary and writes logs.
+     * Public method for GUI access.
+     */
+    public static void handleResults(List<ExtractionResult> results, Path folder, boolean mergeOutput) {
+        printResults(results, folder, mergeOutput);
     }
 
     private static AppConfig parseArguments(String[] args) {
@@ -108,7 +122,11 @@ public class ExcelToCsvExtractor {
             """);
     }
 
-    private static List<ExtractionResult> processExcelFiles(Path folder, String columnName) {
+    /**
+     * Process all Excel files in the specified folder.
+     * Public method for GUI access.
+     */
+    public static List<ExtractionResult> processExcelFiles(Path folder, String columnName) {
         try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
             var excelFiles = findExcelFiles(folder);
 
