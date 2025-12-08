@@ -2,6 +2,17 @@
 
 Extracts a specific column from Excel files (.xlsx, .xls) and saves as CSV with semicolon separators.
 
+**Requires Java 25.0.1**
+
+## Features
+
+- Case-insensitive column matching (tries: lowercase, UPPERCASE, Capitalized)
+- Processes all .xlsx and .xls files in the folder
+- Creates CSV files with semicolon separators
+- Logs errors to `error_log_<timestamp>.txt` when columns are not found
+- **Virtual threads** for concurrent file processing
+- **Records and sealed interfaces** for type-safe result handling
+
 ## Build
 
 ```bash
@@ -25,13 +36,6 @@ java -jar target/excel-to-csv-1.0.0.jar <column-name> <folder-path>
 java -jar target/excel-to-csv-1.0.0.jar email ./data
 ```
 
-## Features
-
-- Case-insensitive column matching (tries: lowercase, UPPERCASE, Capitalized)
-- Processes all .xlsx and .xls files in the folder
-- Creates CSV files with semicolon separators
-- Logs errors to `error_log_<timestamp>.txt` when columns are not found
-
 ## Testing
 
 A test Excel generator is included in the `test/` folder. After building:
@@ -49,3 +53,13 @@ java -jar target/excel-to-csv-1.0.0.jar email ./test
 ```
 
 This creates 3 test files: one with "Email" column, one with "EMAIL" column, and one without an email column (to test error logging).
+
+## Java 25.0.1 Features Used
+
+- **Virtual Threads** - Concurrent file processing with lightweight threads
+- **Records** - Immutable data carriers for extraction results and column data
+- **Sealed Interfaces** - Type-safe result handling with `ExtractionResult`
+- **Pattern Matching** - Enhanced switch expressions with record patterns
+- **Text Blocks** - Multi-line strings for usage messages and logs
+- **Local Variable Type Inference** - `var` for cleaner code
+- **NIO.2 APIs** - Modern file operations with `Path` and `Files`
