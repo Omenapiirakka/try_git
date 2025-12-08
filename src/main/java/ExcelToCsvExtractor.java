@@ -190,13 +190,44 @@ public class ExcelToCsvExtractor {
         var fileName = file.getFileName().toString().toLowerCase();
 
         try {
-            if (fileName.endsWith(".xml")) {
+            // Check file extension first, then verify content for xlsx/xls files
+            if (fileName.endsWith(".xml") || isRawXmlFile(file)) {
                 return processXmlSpreadsheet(file, columnName, csvFolder, mergeOutput);
             } else {
                 return processExcelFile(file, columnName, csvFolder, mergeOutput);
             }
         } catch (Exception e) {
             return new ExtractionFailure(file, e.getMessage());
+        }
+    }
+
+    /**
+     * Detects if a file is a raw XML file by checking its content.
+     * Office 2003 XML files with .xlsx or .xls extensions would fail in Apache POI,
+     * so we detect them here and route to the XML parser instead.
+     */
+    private static boolean isRawXmlFile(Path file) {
+        try (var is = Files.newInputStream(file)) {
+            byte[] header = new byte[100];
+            int bytesRead = is.read(header);
+            if (bytesRead < 5) {
+                return false;
+            }
+
+            var content = new String(header, 0, bytesRead, java.nio.charset.StandardCharsets.UTF_8).trim();
+
+            // Check for XML declaration or root element
+            if (content.startsWith("<?xml") || content.startsWith("<")) {
+                // Additional check: verify it's not a valid ZIP file (OOXML .xlsx files are ZIP)
+                // ZIP files start with PK (0x50 0x4B)
+                if (header[0] == 0x50 && header[1] == 0x4B) {
+                    return false; // It's a ZIP/OOXML file
+                }
+                return true;
+            }
+            return false;
+        } catch (IOException e) {
+            return false;
         }
     }
 
