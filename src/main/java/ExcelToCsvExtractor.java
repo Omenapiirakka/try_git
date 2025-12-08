@@ -49,7 +49,7 @@ public class ExcelToCsvExtractor {
             System.exit(1);
         }
 
-        var results = processExcelFiles(config.folderPath(), config.columnName());
+        var results = processExcelFiles(config.folderPath(), config.columnName(), config.mergeOutput());
         handleResults(results, config.folderPath(), config.mergeOutput());
     }
 
@@ -127,6 +127,14 @@ public class ExcelToCsvExtractor {
      * Public method for GUI access.
      */
     public static List<ExtractionResult> processExcelFiles(Path folder, String columnName) {
+        return processExcelFiles(folder, columnName, false);
+    }
+
+    /**
+     * Process all Excel files in the specified folder.
+     * When mergeOutput is true, individual CSV files are not written.
+     */
+    public static List<ExtractionResult> processExcelFiles(Path folder, String columnName, boolean mergeOutput) {
         try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
             var excelFiles = findExcelFiles(folder);
 
@@ -140,7 +148,7 @@ public class ExcelToCsvExtractor {
             Files.createDirectories(csvFolder);
 
             var futures = excelFiles.stream()
-                .map(file -> executor.submit(() -> processFile(file, columnName, csvFolder)))
+                .map(file -> executor.submit(() -> processFile(file, columnName, csvFolder, mergeOutput)))
                 .toList();
 
             return futures.stream()
@@ -176,23 +184,23 @@ public class ExcelToCsvExtractor {
         }
     }
 
-    private static ExtractionResult processFile(Path file, String columnName, Path csvFolder) {
+    private static ExtractionResult processFile(Path file, String columnName, Path csvFolder, boolean mergeOutput) {
         System.out.println("Processing: " + file.getFileName());
 
         var fileName = file.getFileName().toString().toLowerCase();
 
         try {
             if (fileName.endsWith(".xml")) {
-                return processXmlSpreadsheet(file, columnName, csvFolder);
+                return processXmlSpreadsheet(file, columnName, csvFolder, mergeOutput);
             } else {
-                return processExcelFile(file, columnName, csvFolder);
+                return processExcelFile(file, columnName, csvFolder, mergeOutput);
             }
         } catch (Exception e) {
             return new ExtractionFailure(file, e.getMessage());
         }
     }
 
-    private static ExtractionResult processExcelFile(Path file, String columnName, Path csvFolder) {
+    private static ExtractionResult processExcelFile(Path file, String columnName, Path csvFolder, boolean mergeOutput) {
         try (var is = Files.newInputStream(file);
              var workbook = createWorkbook(file, is)) {
 
@@ -209,7 +217,8 @@ public class ExcelToCsvExtractor {
                 case null -> new ExtractionFailure(file, "Column '" + columnName + "' not found");
                 case ColumnData(var index, _) -> {
                     var values = extractColumnValues(sheet, index);
-                    var csvPath = writeCsv(file, values, csvFolder);
+                    // Only write individual CSV if not merging
+                    Path csvPath = mergeOutput ? null : writeCsv(file, values, csvFolder);
                     yield new ExtractionSuccess(file, csvPath, values.size(), values);
                 }
             };
@@ -219,7 +228,7 @@ public class ExcelToCsvExtractor {
         }
     }
 
-    private static ExtractionResult processXmlSpreadsheet(Path file, String columnName, Path csvFolder) {
+    private static ExtractionResult processXmlSpreadsheet(Path file, String columnName, Path csvFolder, boolean mergeOutput) {
         try {
             var factory = DocumentBuilderFactory.newInstance();
             factory.setNamespaceAware(true);
@@ -254,7 +263,8 @@ public class ExcelToCsvExtractor {
                 }
             }
 
-            var csvPath = writeCsv(file, values, csvFolder);
+            // Only write individual CSV if not merging
+            Path csvPath = mergeOutput ? null : writeCsv(file, values, csvFolder);
             return new ExtractionSuccess(file, csvPath, values.size(), values);
 
         } catch (Exception e) {
@@ -390,9 +400,15 @@ public class ExcelToCsvExtractor {
             .replaceAll("\\.(xlsx|xls|xml)$", ".csv");
         var csvPath = csvFolder.resolve(csvName);
 
+        // Filter out empty values and join as single row
         var content = values.stream()
-            .map(value -> value + CSV_SEPARATOR)
-            .collect(Collectors.joining(System.lineSeparator()));
+            .filter(value -> value != null && !value.trim().isEmpty())
+            .collect(Collectors.joining(CSV_SEPARATOR));
+
+        // Add trailing separator if content exists
+        if (!content.isEmpty()) {
+            content = content + CSV_SEPARATOR;
+        }
 
         Files.writeString(csvPath, content + System.lineSeparator());
         return csvPath;
@@ -406,7 +422,12 @@ public class ExcelToCsvExtractor {
             switch (result) {
                 case ExtractionSuccess s -> {
                     successes.add(s);
-                    System.out.println("Created CSV: " + s.csvFile().getFileName() + " (" + s.rowCount() + " rows)");
+                    // Only print individual CSV message if not merging
+                    if (s.csvFile() != null) {
+                        System.out.println("Created CSV: " + s.csvFile().getFileName() + " (" + s.rowCount() + " rows)");
+                    } else {
+                        System.out.println("Extracted from: " + s.sourceFile().getFileName() + " (" + s.rowCount() + " rows)");
+                    }
                 }
                 case ExtractionFailure f -> {
                     failures.add(f);
@@ -438,16 +459,22 @@ public class ExcelToCsvExtractor {
         var mergedPath = csvFolder.resolve("merged_" + timestamp + ".csv");
 
         try {
+            // Filter out empty values and join as single row
             var allValues = successes.stream()
                 .flatMap(s -> s.values().stream())
+                .filter(value -> value != null && !value.trim().isEmpty())
                 .toList();
 
             var content = allValues.stream()
-                .map(value -> value + CSV_SEPARATOR)
-                .collect(Collectors.joining(System.lineSeparator()));
+                .collect(Collectors.joining(CSV_SEPARATOR));
+
+            // Add trailing separator if content exists
+            if (!content.isEmpty()) {
+                content = content + CSV_SEPARATOR;
+            }
 
             Files.writeString(mergedPath, content + System.lineSeparator());
-            System.out.println("Created merged CSV: " + mergedPath.getFileName() + " (" + allValues.size() + " total rows)");
+            System.out.println("Created merged CSV: " + mergedPath.getFileName() + " (" + allValues.size() + " values)");
         } catch (IOException e) {
             System.err.println("Failed to write merged CSV: " + e.getMessage());
         }
