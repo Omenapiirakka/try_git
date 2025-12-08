@@ -246,7 +246,7 @@ public class ExcelToCsvGui extends JFrame {
                 System.setErr(guiErr);
 
                 // Run extraction
-                var results = ExcelToCsvExtractor.processExcelFiles(folder, columnName);
+                var results = ExcelToCsvExtractor.processExcelFiles(folder, columnName, mergeOutput);
                 ExcelToCsvExtractor.handleResults(results, folder, mergeOutput);
 
                 // Count successes and failures
