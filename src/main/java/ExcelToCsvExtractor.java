@@ -431,18 +431,100 @@ public class ExcelToCsvExtractor {
             .replaceAll("\\.(xlsx|xls|xml)$", ".csv");
         var csvPath = csvFolder.resolve(csvName);
 
-        // Filter out empty values and join as single row
-        var content = values.stream()
+        // Filter out empty values and write each value on a new line
+        var filteredValues = values.stream()
             .filter(value -> value != null && !value.trim().isEmpty())
-            .collect(Collectors.joining(CSV_SEPARATOR));
+            .toList();
 
-        // Add trailing separator if content exists
-        if (!content.isEmpty()) {
-            content = content + CSV_SEPARATOR;
+        // Build CSV content with each entry on a new line
+        var content = new StringBuilder();
+        for (var value : filteredValues) {
+            content.append(escapeCsvValue(value))
+                   .append(CSV_SEPARATOR)
+                   .append(System.lineSeparator());
         }
 
-        Files.writeString(csvPath, content + System.lineSeparator());
+        Files.writeString(csvPath, content.toString());
+
+        // Validate the output CSV
+        validateCsv(csvPath);
+
         return csvPath;
+    }
+
+    /**
+     * Escapes a value for CSV format.
+     * If the value contains the separator, quotes, or newlines, it must be quoted.
+     */
+    private static String escapeCsvValue(String value) {
+        if (value == null) {
+            return "";
+        }
+
+        // Check if the value needs to be quoted
+        boolean needsQuoting = value.contains(CSV_SEPARATOR)
+            || value.contains("\"")
+            || value.contains("\n")
+            || value.contains("\r");
+
+        if (needsQuoting) {
+            // Escape double quotes by doubling them and wrap in quotes
+            return "\"" + value.replace("\"", "\"\"") + "\"";
+        }
+
+        return value;
+    }
+
+    /**
+     * Validates that a CSV file is properly formatted.
+     * Throws IOException if the CSV is invalid.
+     */
+    private static void validateCsv(Path csvPath) throws IOException {
+        var content = Files.readString(csvPath);
+
+        // Check that file is not empty (allow empty files for empty input)
+        if (content.isEmpty()) {
+            return; // Empty CSV is valid
+        }
+
+        var lines = content.split(System.lineSeparator(), -1);
+
+        for (int lineNum = 0; lineNum < lines.length; lineNum++) {
+            var line = lines[lineNum];
+
+            // Skip empty lines at the end
+            if (line.isEmpty() && lineNum == lines.length - 1) {
+                continue;
+            }
+
+            // Validate quoted fields are properly closed
+            if (!isValidCsvLine(line)) {
+                throw new IOException("Invalid CSV at line " + (lineNum + 1) + ": unbalanced quotes");
+            }
+        }
+    }
+
+    /**
+     * Checks if a CSV line has balanced quotes.
+     */
+    private static boolean isValidCsvLine(String line) {
+        boolean inQuotes = false;
+
+        for (int i = 0; i < line.length(); i++) {
+            char c = line.charAt(i);
+
+            if (c == '"') {
+                // Check for escaped quote (doubled)
+                if (inQuotes && i + 1 < line.length() && line.charAt(i + 1) == '"') {
+                    i++; // Skip the escaped quote
+                } else {
+                    inQuotes = !inQuotes;
+                }
+            }
+        }
+
+        // Quotes should be balanced (not inside a quoted field at end of line)
+        return !inQuotes;
     }
 
     private static void printResults(List<ExtractionResult> results, Path folder, boolean mergeOutput) {
@@ -490,21 +572,25 @@ public class ExcelToCsvExtractor {
         var mergedPath = csvFolder.resolve("merged_" + timestamp + ".csv");
 
         try {
-            // Filter out empty values and join as single row
+            // Filter out empty values
             var allValues = successes.stream()
                 .flatMap(s -> s.values().stream())
                 .filter(value -> value != null && !value.trim().isEmpty())
                 .toList();
 
-            var content = allValues.stream()
-                .collect(Collectors.joining(CSV_SEPARATOR));
-
-            // Add trailing separator if content exists
-            if (!content.isEmpty()) {
-                content = content + CSV_SEPARATOR;
+            // Build CSV content with each entry on a new line
+            var content = new StringBuilder();
+            for (var value : allValues) {
+                content.append(escapeCsvValue(value))
+                       .append(CSV_SEPARATOR)
+                       .append(System.lineSeparator());
             }
 
-            Files.writeString(mergedPath, content + System.lineSeparator());
+            Files.writeString(mergedPath, content.toString());
+
+            // Validate the output CSV
+            validateCsv(mergedPath);
+
             System.out.println("Created merged CSV: " + mergedPath.getFileName() + " (" + allValues.size() + " values)");
         } catch (IOException e) {
             System.err.println("Failed to write merged CSV: " + e.getMessage());
