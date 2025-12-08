@@ -6,7 +6,7 @@
 
     <groupId>com.example</groupId>
     <artifactId>excel-to-csv</artifactId>
-    <version>1.0.0</version>
+    <version>25.0.1</version>
     <packaging>jar</packaging>
 
     <properties>
