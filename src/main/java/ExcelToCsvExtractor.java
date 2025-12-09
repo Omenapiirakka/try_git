@@ -17,15 +17,47 @@ import java.util.stream.*;
 
 /**
  * Excel to CSV Column Extractor - Java 25.0.1
- * Extracts a specific column from Excel files and saves as CSV with semicolon separators.
+ * Extracts a specific column from Excel files and saves as CSV.
  * Supports: .xlsx (OOXML), .xls (BIFF), .xml (Office 2003 SpreadsheetML)
  * Uses virtual threads for concurrent file processing.
  */
 public class ExcelToCsvExtractor {
 
-    private static final String CSV_SEPARATOR = ";";
     private static final String CSV_FOLDER = "CSV";
     private static final String LOGS_FOLDER = "logs";
+
+    /**
+     * CSV delimiter options with display names and actual separator characters.
+     */
+    public enum CsvDelimiter {
+        COMMA("Comma (,)", ","),
+        SEMICOLON("Semicolon (;)", ";"),
+        TAB("Tab", "\t"),
+        PIPE("Pipe (|)", "|"),
+        COLON("Colon (:)", ":"),
+        SPACE("Space", " ");
+
+        private final String displayName;
+        private final String separator;
+
+        CsvDelimiter(String displayName, String separator) {
+            this.displayName = displayName;
+            this.separator = separator;
+        }
+
+        public String getDisplayName() {
+            return displayName;
+        }
+
+        public String getSeparator() {
+            return separator;
+        }
+
+        @Override
+        public String toString() {
+            return displayName;
+        }
+    }
 
     public sealed interface ExtractionResult permits ExtractionSuccess, ExtractionFailure {}
 
@@ -35,7 +67,7 @@ public class ExcelToCsvExtractor {
 
     public record ColumnData(int index, String name) {}
 
-    public record AppConfig(String columnName, Path folderPath, boolean mergeOutput) {}
+    public record AppConfig(String columnName, Path folderPath, boolean mergeOutput, CsvDelimiter delimiter) {}
 
     public static void main(String[] args) {
         // Launch GUI if no arguments provided
@@ -49,16 +81,16 @@ public class ExcelToCsvExtractor {
             System.exit(1);
         }
 
-        var results = processExcelFiles(config.folderPath(), config.columnName(), config.mergeOutput(), false);
-        handleResults(results, config.folderPath(), config.mergeOutput(), false);
+        var results = processExcelFiles(config.folderPath(), config.columnName(), config.mergeOutput(), false, config.delimiter());
+        handleResults(results, config.folderPath(), config.mergeOutput(), false, config.delimiter());
     }
 
     /**
      * Handles extraction results - prints summary and writes logs.
      * Public method for GUI access.
      */
-    public static void handleResults(List<ExtractionResult> results, Path folder, boolean mergeOutput, boolean scrambleOutput) {
-        printResults(results, folder, mergeOutput, scrambleOutput);
+    public static void handleResults(List<ExtractionResult> results, Path folder, boolean mergeOutput, boolean scrambleOutput, CsvDelimiter delimiter) {
+        printResults(results, folder, mergeOutput, scrambleOutput, delimiter);
     }
 
     private static AppConfig parseArguments(String[] args) {
@@ -68,12 +100,17 @@ public class ExcelToCsvExtractor {
         }
 
         boolean mergeOutput = false;
+        CsvDelimiter delimiter = CsvDelimiter.SEMICOLON; // Default for backward compatibility
         String columnName = null;
         String folderPathStr = null;
 
         for (int i = 0; i < args.length; i++) {
             if (args[i].equals("--merge") || args[i].equals("-m")) {
                 mergeOutput = true;
+            } else if (args[i].equals("--delimiter") || args[i].equals("-d")) {
+                if (i + 1 < args.length) {
+                    delimiter = parseDelimiter(args[++i]);
+                }
             } else if (columnName == null) {
                 columnName = args[i];
             } else if (folderPathStr == null) {
@@ -93,7 +130,22 @@ public class ExcelToCsvExtractor {
             return null;
         }
 
-        return new AppConfig(columnName, folderPath, mergeOutput);
+        return new AppConfig(columnName, folderPath, mergeOutput, delimiter);
+    }
+
+    private static CsvDelimiter parseDelimiter(String value) {
+        return switch (value.toLowerCase()) {
+            case "comma", "," -> CsvDelimiter.COMMA;
+            case "semicolon", ";" -> CsvDelimiter.SEMICOLON;
+            case "tab", "\\t" -> CsvDelimiter.TAB;
+            case "pipe", "|" -> CsvDelimiter.PIPE;
+            case "colon", ":" -> CsvDelimiter.COLON;
+            case "space", " " -> CsvDelimiter.SPACE;
+            default -> {
+                System.err.println("Unknown delimiter: " + value + ", using semicolon");
+                yield CsvDelimiter.SEMICOLON;
+            }
+        };
     }
 
     private static void printUsage() {
@@ -105,7 +157,9 @@ public class ExcelToCsvExtractor {
               folder-path   Path to folder containing Excel files
 
             Options:
-              --merge, -m   Generate a single merged CSV file containing all data
+              --merge, -m              Generate a single merged CSV file containing all data
+              --delimiter, -d <type>   CSV delimiter: comma, semicolon, tab, pipe, colon, space
+                                       (default: semicolon)
 
             Supported formats:
               .xlsx         Excel 2007+ (OOXML)
@@ -119,15 +173,16 @@ public class ExcelToCsvExtractor {
             Example:
               java -jar excel-to-csv.jar email ./data
               java -jar excel-to-csv.jar --merge email ./data
+              java -jar excel-to-csv.jar -d comma email ./data
             """);
     }
 
     /**
      * Process all Excel files in the specified folder.
-     * Public method for GUI access.
+     * Public method for GUI access. Uses semicolon delimiter by default.
      */
     public static List<ExtractionResult> processExcelFiles(Path folder, String columnName) {
-        return processExcelFiles(folder, columnName, false, false);
+        return processExcelFiles(folder, columnName, false, false, CsvDelimiter.SEMICOLON);
     }
 
     /**
@@ -135,7 +190,7 @@ public class ExcelToCsvExtractor {
      * When mergeOutput is true, individual CSV files are not written.
      * When scrambleOutput is true, text values are scrambled for debug purposes.
      */
-    public static List<ExtractionResult> processExcelFiles(Path folder, String columnName, boolean mergeOutput, boolean scrambleOutput) {
+    public static List<ExtractionResult> processExcelFiles(Path folder, String columnName, boolean mergeOutput, boolean scrambleOutput, CsvDelimiter delimiter) {
         try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
             var excelFiles = findExcelFiles(folder);
 
@@ -149,7 +204,7 @@ public class ExcelToCsvExtractor {
             Files.createDirectories(csvFolder);
 
             var futures = excelFiles.stream()
-                .map(file -> executor.submit(() -> processFile(file, columnName, csvFolder, mergeOutput, scrambleOutput)))
+                .map(file -> executor.submit(() -> processFile(file, columnName, csvFolder, mergeOutput, scrambleOutput, delimiter)))
                 .toList();
 
             return futures.stream()
@@ -185,7 +240,7 @@ public class ExcelToCsvExtractor {
         }
     }
 
-    private static ExtractionResult processFile(Path file, String columnName, Path csvFolder, boolean mergeOutput, boolean scrambleOutput) {
+    private static ExtractionResult processFile(Path file, String columnName, Path csvFolder, boolean mergeOutput, boolean scrambleOutput, CsvDelimiter delimiter) {
         System.out.println("Processing: " + file.getFileName());
 
         var fileName = file.getFileName().toString().toLowerCase();
@@ -193,9 +248,9 @@ public class ExcelToCsvExtractor {
         try {
             // Check file extension first, then verify content for xlsx/xls files
             if (fileName.endsWith(".xml") || isRawXmlFile(file)) {
-                return processXmlSpreadsheet(file, columnName, csvFolder, mergeOutput, scrambleOutput);
+                return processXmlSpreadsheet(file, columnName, csvFolder, mergeOutput, scrambleOutput, delimiter);
             } else {
-                return processExcelFile(file, columnName, csvFolder, mergeOutput, scrambleOutput);
+                return processExcelFile(file, columnName, csvFolder, mergeOutput, scrambleOutput, delimiter);
             }
         } catch (Exception e) {
             return new ExtractionFailure(file, e.getMessage());
@@ -232,7 +287,7 @@ public class ExcelToCsvExtractor {
         }
     }
 
-    private static ExtractionResult processExcelFile(Path file, String columnName, Path csvFolder, boolean mergeOutput, boolean scrambleOutput) {
+    private static ExtractionResult processExcelFile(Path file, String columnName, Path csvFolder, boolean mergeOutput, boolean scrambleOutput, CsvDelimiter delimiter) {
         try (var is = Files.newInputStream(file);
              var workbook = createWorkbook(file, is)) {
 
@@ -250,7 +305,7 @@ public class ExcelToCsvExtractor {
                 case ColumnData(var index, _) -> {
                     var values = extractColumnValues(sheet, index);
                     // Only write individual CSV if not merging
-                    Path csvPath = mergeOutput ? null : writeCsv(file, values, csvFolder, scrambleOutput);
+                    Path csvPath = mergeOutput ? null : writeCsv(file, values, csvFolder, scrambleOutput, delimiter);
                     yield new ExtractionSuccess(file, csvPath, values.size(), values);
                 }
             };
@@ -260,7 +315,7 @@ public class ExcelToCsvExtractor {
         }
     }
 
-    private static ExtractionResult processXmlSpreadsheet(Path file, String columnName, Path csvFolder, boolean mergeOutput, boolean scrambleOutput) {
+    private static ExtractionResult processXmlSpreadsheet(Path file, String columnName, Path csvFolder, boolean mergeOutput, boolean scrambleOutput, CsvDelimiter delimiter) {
         try {
             var factory = DocumentBuilderFactory.newInstance();
             factory.setNamespaceAware(true);
@@ -296,7 +351,7 @@ public class ExcelToCsvExtractor {
             }
 
             // Only write individual CSV if not merging
-            Path csvPath = mergeOutput ? null : writeCsv(file, values, csvFolder, scrambleOutput);
+            Path csvPath = mergeOutput ? null : writeCsv(file, values, csvFolder, scrambleOutput, delimiter);
             return new ExtractionSuccess(file, csvPath, values.size(), values);
 
         } catch (Exception e) {
@@ -427,26 +482,13 @@ public class ExcelToCsvExtractor {
         };
     }
 
-    private static Path writeCsv(Path excelFile, List<String> values, Path csvFolder, boolean scrambleOutput) throws IOException {
+    private static Path writeCsv(Path excelFile, List<String> values, Path csvFolder, boolean scrambleOutput, CsvDelimiter delimiter) throws IOException {
         var csvName = excelFile.getFileName().toString()
             .replaceAll("\\.(xlsx|xls|xml)$", ".csv");
         var csvPath = csvFolder.resolve(csvName);
 
-        // Filter out empty values and write each value on a new line
-        var filteredValues = values.stream()
-            .filter(value -> value != null && !value.trim().isEmpty())
-            .toList();
-
-        // Build CSV content with each entry on a new line
-        var content = new StringBuilder();
-        for (var value : filteredValues) {
-            var outputValue = scrambleOutput ? scrambleText(value) : value;
-            content.append(escapeCsvValue(outputValue))
-                   .append(CSV_SEPARATOR)
-                   .append(System.lineSeparator());
-        }
-
-        Files.writeString(csvPath, content.toString());
+        var content = buildCsvContent(values, scrambleOutput, delimiter);
+        Files.writeString(csvPath, content);
 
         // Validate the output CSV
         validateCsv(csvPath);
@@ -455,16 +497,35 @@ public class ExcelToCsvExtractor {
     }
 
     /**
+     * Builds CSV content from a list of values.
+     * Filters out empty values and applies scrambling if requested.
+     */
+    private static String buildCsvContent(List<String> values, boolean scrambleOutput, CsvDelimiter delimiter) {
+        var filteredValues = values.stream()
+            .filter(value -> value != null && !value.trim().isEmpty())
+            .toList();
+
+        var content = new StringBuilder();
+        for (var value : filteredValues) {
+            var outputValue = scrambleOutput ? scrambleText(value) : value;
+            content.append(escapeCsvValue(outputValue, delimiter))
+                   .append(delimiter.getSeparator())
+                   .append(System.lineSeparator());
+        }
+        return content.toString();
+    }
+
+    /**
      * Escapes a value for CSV format.
      * If the value contains the separator, quotes, or newlines, it must be quoted.
      */
-    private static String escapeCsvValue(String value) {
+    private static String escapeCsvValue(String value, CsvDelimiter delimiter) {
         if (value == null) {
             return "";
         }
 
         // Check if the value needs to be quoted
-        boolean needsQuoting = value.contains(CSV_SEPARATOR)
+        boolean needsQuoting = value.contains(delimiter.getSeparator())
             || value.contains("\"")
             || value.contains("\n")
             || value.contains("\r");
@@ -583,7 +644,7 @@ public class ExcelToCsvExtractor {
         return !inQuotes;
     }
 
-    private static void printResults(List<ExtractionResult> results, Path folder, boolean mergeOutput, boolean scrambleOutput) {
+    private static void printResults(List<ExtractionResult> results, Path folder, boolean mergeOutput, boolean scrambleOutput, CsvDelimiter delimiter) {
         var successes = new ArrayList<ExtractionSuccess>();
         var failures = new ArrayList<ExtractionFailure>();
 
@@ -607,7 +668,7 @@ public class ExcelToCsvExtractor {
 
         // Write merged CSV if requested
         if (mergeOutput && !successes.isEmpty()) {
-            writeMergedCsv(folder, successes, scrambleOutput);
+            writeMergedCsv(folder, successes, scrambleOutput, delimiter);
         }
 
         if (!failures.isEmpty()) {
@@ -622,33 +683,26 @@ public class ExcelToCsvExtractor {
             """.formatted(successes.size(), failures.size()));
     }
 
-    private static void writeMergedCsv(Path folder, List<ExtractionSuccess> successes, boolean scrambleOutput) {
+    private static void writeMergedCsv(Path folder, List<ExtractionSuccess> successes, boolean scrambleOutput, CsvDelimiter delimiter) {
         var csvFolder = folder.resolve(CSV_FOLDER);
         var timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
         var mergedPath = csvFolder.resolve("merged_" + timestamp + ".csv");
 
         try {
-            // Filter out empty values
             var allValues = successes.stream()
                 .flatMap(s -> s.values().stream())
-                .filter(value -> value != null && !value.trim().isEmpty())
                 .toList();
 
-            // Build CSV content with each entry on a new line
-            var content = new StringBuilder();
-            for (var value : allValues) {
-                var outputValue = scrambleOutput ? scrambleText(value) : value;
-                content.append(escapeCsvValue(outputValue))
-                       .append(CSV_SEPARATOR)
-                       .append(System.lineSeparator());
-            }
-
-            Files.writeString(mergedPath, content.toString());
+            var content = buildCsvContent(allValues, scrambleOutput, delimiter);
+            Files.writeString(mergedPath, content);
 
             // Validate the output CSV
             validateCsv(mergedPath);
 
-            System.out.println("Created merged CSV: " + mergedPath.getFileName() + " (" + allValues.size() + " values)");
+            var valueCount = allValues.stream()
+                .filter(value -> value != null && !value.trim().isEmpty())
+                .count();
+            System.out.println("Created merged CSV: " + mergedPath.getFileName() + " (" + valueCount + " values)");
         } catch (IOException e) {
             System.err.println("Failed to write merged CSV: " + e.getMessage());
         }
