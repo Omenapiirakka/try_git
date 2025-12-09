@@ -17,6 +17,7 @@ public class ExcelToCsvGui extends JFrame {
     private JTextField folderField;
     private JTextField columnField;
     private JComboBox<ExcelToCsvExtractor.CsvDelimiter> delimiterComboBox;
+    private JComboBox<ExcelToCsvExtractor.CsvEncoding> encodingComboBox;
     private JCheckBox mergeCheckbox;
     private JCheckBox scrambleCheckbox;
     private JButton browseButton;
@@ -108,9 +109,24 @@ public class ExcelToCsvGui extends JFrame {
         delimiterComboBox.setToolTipText("CSV field separator character");
         panel.add(delimiterComboBox, gbc);
 
-        // Options row
+        // Encoding row
         gbc.gridx = 0;
         gbc.gridy = 3;
+        gbc.gridwidth = 1;
+        gbc.weightx = 0;
+        panel.add(new JLabel("Encoding:"), gbc);
+
+        gbc.gridx = 1;
+        gbc.gridwidth = 2;
+        gbc.weightx = 1;
+        encodingComboBox = new JComboBox<>(ExcelToCsvExtractor.CsvEncoding.values());
+        encodingComboBox.setSelectedItem(ExcelToCsvExtractor.CsvEncoding.UTF_8);
+        encodingComboBox.setToolTipText("CSV file encoding (UTF-8 with BOM recommended for Excel compatibility)");
+        panel.add(encodingComboBox, gbc);
+
+        // Options row
+        gbc.gridx = 0;
+        gbc.gridy = 4;
         gbc.gridwidth = 1;
         gbc.weightx = 0;
         panel.add(new JLabel("Options:"), gbc);
@@ -123,7 +139,7 @@ public class ExcelToCsvGui extends JFrame {
 
         // Debug scramble option row
         gbc.gridx = 1;
-        gbc.gridy = 4;
+        gbc.gridy = 5;
         gbc.gridwidth = 2;
         scrambleCheckbox = new JCheckBox("Scramble output text (Debug)");
         scrambleCheckbox.setToolTipText("For debug purposes only: scrambles/randomizes text in CSV output to anonymize data");
@@ -131,7 +147,7 @@ public class ExcelToCsvGui extends JFrame {
 
         // Extract button row
         gbc.gridx = 0;
-        gbc.gridy = 5;
+        gbc.gridy = 6;
         gbc.gridwidth = 3;
         gbc.anchor = GridBagConstraints.CENTER;
         gbc.fill = GridBagConstraints.NONE;
@@ -220,7 +236,8 @@ public class ExcelToCsvGui extends JFrame {
 
         // Run extraction in background thread
         var delimiter = (ExcelToCsvExtractor.CsvDelimiter) delimiterComboBox.getSelectedItem();
-        var worker = new ExtractionWorker(folder, columnName, mergeCheckbox.isSelected(), scrambleCheckbox.isSelected(), delimiter);
+        var encoding = (ExcelToCsvExtractor.CsvEncoding) encodingComboBox.getSelectedItem();
+        var worker = new ExtractionWorker(folder, columnName, mergeCheckbox.isSelected(), scrambleCheckbox.isSelected(), delimiter, encoding);
         worker.execute();
     }
 
@@ -228,6 +245,7 @@ public class ExcelToCsvGui extends JFrame {
         folderField.setEnabled(enabled);
         columnField.setEnabled(enabled);
         delimiterComboBox.setEnabled(enabled);
+        encodingComboBox.setEnabled(enabled);
         mergeCheckbox.setEnabled(enabled);
         scrambleCheckbox.setEnabled(enabled);
         browseButton.setEnabled(enabled);
@@ -255,13 +273,15 @@ public class ExcelToCsvGui extends JFrame {
         private final boolean mergeOutput;
         private final boolean scrambleOutput;
         private final ExcelToCsvExtractor.CsvDelimiter delimiter;
+        private final ExcelToCsvExtractor.CsvEncoding encoding;
 
-        ExtractionWorker(Path folder, String columnName, boolean mergeOutput, boolean scrambleOutput, ExcelToCsvExtractor.CsvDelimiter delimiter) {
+        ExtractionWorker(Path folder, String columnName, boolean mergeOutput, boolean scrambleOutput, ExcelToCsvExtractor.CsvDelimiter delimiter, ExcelToCsvExtractor.CsvEncoding encoding) {
             this.folder = folder;
             this.columnName = columnName;
             this.mergeOutput = mergeOutput;
             this.scrambleOutput = scrambleOutput;
             this.delimiter = delimiter;
+            this.encoding = encoding;
         }
 
         @Override
@@ -278,8 +298,8 @@ public class ExcelToCsvGui extends JFrame {
                 System.setErr(guiErr);
 
                 // Run extraction
-                var results = ExcelToCsvExtractor.processExcelFiles(folder, columnName, mergeOutput, scrambleOutput, delimiter);
-                ExcelToCsvExtractor.handleResults(results, folder, mergeOutput, scrambleOutput, delimiter);
+                var results = ExcelToCsvExtractor.processExcelFiles(folder, columnName, mergeOutput, scrambleOutput, delimiter, encoding);
+                ExcelToCsvExtractor.handleResults(results, folder, mergeOutput, scrambleOutput, delimiter, encoding);
 
                 // Count successes and failures
                 int successCount = 0;
