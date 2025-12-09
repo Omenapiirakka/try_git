@@ -17,6 +17,7 @@ public class ExcelToCsvGui extends JFrame {
     private JTextField folderField;
     private JTextField columnField;
     private JCheckBox mergeCheckbox;
+    private JCheckBox scrambleCheckbox;
     private JButton browseButton;
     private JButton extractButton;
     private JTextArea outputArea;
@@ -104,9 +105,17 @@ public class ExcelToCsvGui extends JFrame {
         mergeCheckbox.setToolTipText("Generate one merged CSV containing data from all processed files");
         panel.add(mergeCheckbox, gbc);
 
+        // Debug scramble option row
+        gbc.gridx = 1;
+        gbc.gridy = 3;
+        gbc.gridwidth = 2;
+        scrambleCheckbox = new JCheckBox("Scramble output text (Debug)");
+        scrambleCheckbox.setToolTipText("For debug purposes only: scrambles/randomizes text in CSV output to anonymize data");
+        panel.add(scrambleCheckbox, gbc);
+
         // Extract button row
         gbc.gridx = 0;
-        gbc.gridy = 3;
+        gbc.gridy = 4;
         gbc.gridwidth = 3;
         gbc.anchor = GridBagConstraints.CENTER;
         gbc.fill = GridBagConstraints.NONE;
@@ -194,7 +203,7 @@ public class ExcelToCsvGui extends JFrame {
         statusLabel.setText("Extracting column '" + columnName + "' from Excel files...");
 
         // Run extraction in background thread
-        var worker = new ExtractionWorker(folder, columnName, mergeCheckbox.isSelected());
+        var worker = new ExtractionWorker(folder, columnName, mergeCheckbox.isSelected(), scrambleCheckbox.isSelected());
         worker.execute();
     }
 
@@ -202,6 +211,7 @@ public class ExcelToCsvGui extends JFrame {
         folderField.setEnabled(enabled);
         columnField.setEnabled(enabled);
         mergeCheckbox.setEnabled(enabled);
+        scrambleCheckbox.setEnabled(enabled);
         browseButton.setEnabled(enabled);
         extractButton.setEnabled(enabled);
     }
@@ -225,11 +235,13 @@ public class ExcelToCsvGui extends JFrame {
         private final Path folder;
         private final String columnName;
         private final boolean mergeOutput;
+        private final boolean scrambleOutput;
 
-        ExtractionWorker(Path folder, String columnName, boolean mergeOutput) {
+        ExtractionWorker(Path folder, String columnName, boolean mergeOutput, boolean scrambleOutput) {
             this.folder = folder;
             this.columnName = columnName;
             this.mergeOutput = mergeOutput;
+            this.scrambleOutput = scrambleOutput;
         }
 
         @Override
@@ -246,8 +258,8 @@ public class ExcelToCsvGui extends JFrame {
                 System.setErr(guiErr);
 
                 // Run extraction
-                var results = ExcelToCsvExtractor.processExcelFiles(folder, columnName, mergeOutput);
-                ExcelToCsvExtractor.handleResults(results, folder, mergeOutput);
+                var results = ExcelToCsvExtractor.processExcelFiles(folder, columnName, mergeOutput, scrambleOutput);
+                ExcelToCsvExtractor.handleResults(results, folder, mergeOutput, scrambleOutput);
 
                 // Count successes and failures
                 int successCount = 0;

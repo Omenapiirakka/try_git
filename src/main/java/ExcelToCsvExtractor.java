@@ -49,16 +49,16 @@ public class ExcelToCsvExtractor {
             System.exit(1);
         }
 
-        var results = processExcelFiles(config.folderPath(), config.columnName(), config.mergeOutput());
-        handleResults(results, config.folderPath(), config.mergeOutput());
+        var results = processExcelFiles(config.folderPath(), config.columnName(), config.mergeOutput(), false);
+        handleResults(results, config.folderPath(), config.mergeOutput(), false);
     }
 
     /**
      * Handles extraction results - prints summary and writes logs.
      * Public method for GUI access.
      */
-    public static void handleResults(List<ExtractionResult> results, Path folder, boolean mergeOutput) {
-        printResults(results, folder, mergeOutput);
+    public static void handleResults(List<ExtractionResult> results, Path folder, boolean mergeOutput, boolean scrambleOutput) {
+        printResults(results, folder, mergeOutput, scrambleOutput);
     }
 
     private static AppConfig parseArguments(String[] args) {
@@ -127,14 +127,15 @@ public class ExcelToCsvExtractor {
      * Public method for GUI access.
      */
     public static List<ExtractionResult> processExcelFiles(Path folder, String columnName) {
-        return processExcelFiles(folder, columnName, false);
+        return processExcelFiles(folder, columnName, false, false);
     }
 
     /**
      * Process all Excel files in the specified folder.
      * When mergeOutput is true, individual CSV files are not written.
+     * When scrambleOutput is true, text values are scrambled for debug purposes.
      */
-    public static List<ExtractionResult> processExcelFiles(Path folder, String columnName, boolean mergeOutput) {
+    public static List<ExtractionResult> processExcelFiles(Path folder, String columnName, boolean mergeOutput, boolean scrambleOutput) {
         try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
             var excelFiles = findExcelFiles(folder);
 
@@ -148,7 +149,7 @@ public class ExcelToCsvExtractor {
             Files.createDirectories(csvFolder);
 
             var futures = excelFiles.stream()
-                .map(file -> executor.submit(() -> processFile(file, columnName, csvFolder, mergeOutput)))
+                .map(file -> executor.submit(() -> processFile(file, columnName, csvFolder, mergeOutput, scrambleOutput)))
                 .toList();
 
             return futures.stream()
@@ -184,7 +185,7 @@ public class ExcelToCsvExtractor {
         }
     }
 
-    private static ExtractionResult processFile(Path file, String columnName, Path csvFolder, boolean mergeOutput) {
+    private static ExtractionResult processFile(Path file, String columnName, Path csvFolder, boolean mergeOutput, boolean scrambleOutput) {
         System.out.println("Processing: " + file.getFileName());
 
         var fileName = file.getFileName().toString().toLowerCase();
@@ -192,9 +193,9 @@ public class ExcelToCsvExtractor {
         try {
             // Check file extension first, then verify content for xlsx/xls files
             if (fileName.endsWith(".xml") || isRawXmlFile(file)) {
-                return processXmlSpreadsheet(file, columnName, csvFolder, mergeOutput);
+                return processXmlSpreadsheet(file, columnName, csvFolder, mergeOutput, scrambleOutput);
             } else {
-                return processExcelFile(file, columnName, csvFolder, mergeOutput);
+                return processExcelFile(file, columnName, csvFolder, mergeOutput, scrambleOutput);
             }
         } catch (Exception e) {
             return new ExtractionFailure(file, e.getMessage());
@@ -231,7 +232,7 @@ public class ExcelToCsvExtractor {
         }
     }
 
-    private static ExtractionResult processExcelFile(Path file, String columnName, Path csvFolder, boolean mergeOutput) {
+    private static ExtractionResult processExcelFile(Path file, String columnName, Path csvFolder, boolean mergeOutput, boolean scrambleOutput) {
         try (var is = Files.newInputStream(file);
              var workbook = createWorkbook(file, is)) {
 
@@ -249,7 +250,7 @@ public class ExcelToCsvExtractor {
                 case ColumnData(var index, _) -> {
                     var values = extractColumnValues(sheet, index);
                     // Only write individual CSV if not merging
-                    Path csvPath = mergeOutput ? null : writeCsv(file, values, csvFolder);
+                    Path csvPath = mergeOutput ? null : writeCsv(file, values, csvFolder, scrambleOutput);
                     yield new ExtractionSuccess(file, csvPath, values.size(), values);
                 }
             };
@@ -259,7 +260,7 @@ public class ExcelToCsvExtractor {
         }
     }
 
-    private static ExtractionResult processXmlSpreadsheet(Path file, String columnName, Path csvFolder, boolean mergeOutput) {
+    private static ExtractionResult processXmlSpreadsheet(Path file, String columnName, Path csvFolder, boolean mergeOutput, boolean scrambleOutput) {
         try {
             var factory = DocumentBuilderFactory.newInstance();
             factory.setNamespaceAware(true);
@@ -295,7 +296,7 @@ public class ExcelToCsvExtractor {
             }
 
             // Only write individual CSV if not merging
-            Path csvPath = mergeOutput ? null : writeCsv(file, values, csvFolder);
+            Path csvPath = mergeOutput ? null : writeCsv(file, values, csvFolder, scrambleOutput);
             return new ExtractionSuccess(file, csvPath, values.size(), values);
 
         } catch (Exception e) {
@@ -426,7 +427,7 @@ public class ExcelToCsvExtractor {
         };
     }
 
-    private static Path writeCsv(Path excelFile, List<String> values, Path csvFolder) throws IOException {
+    private static Path writeCsv(Path excelFile, List<String> values, Path csvFolder, boolean scrambleOutput) throws IOException {
         var csvName = excelFile.getFileName().toString()
             .replaceAll("\\.(xlsx|xls|xml)$", ".csv");
         var csvPath = csvFolder.resolve(csvName);
@@ -439,7 +440,8 @@ public class ExcelToCsvExtractor {
         // Build CSV content with each entry on a new line
         var content = new StringBuilder();
         for (var value : filteredValues) {
-            content.append(escapeCsvValue(value))
+            var outputValue = scrambleOutput ? scrambleText(value) : value;
+            content.append(escapeCsvValue(outputValue))
                    .append(CSV_SEPARATOR)
                    .append(System.lineSeparator());
         }
@@ -473,6 +475,60 @@ public class ExcelToCsvExtractor {
         }
 
         return value;
+    }
+
+    /**
+     * Scrambles text by shuffling characters within each word.
+     * Preserves the overall structure (spaces, punctuation) for debug purposes.
+     * This is used for anonymizing data in debug output.
+     */
+    private static String scrambleText(String text) {
+        if (text == null || text.isEmpty()) {
+            return text;
+        }
+
+        var result = new StringBuilder();
+        var word = new StringBuilder();
+        var random = new Random(text.hashCode()); // Deterministic scrambling based on input
+
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (Character.isLetterOrDigit(c)) {
+                word.append(c);
+            } else {
+                // Scramble the accumulated word and append it
+                if (!word.isEmpty()) {
+                    result.append(scrambleWord(word.toString(), random));
+                    word.setLength(0);
+                }
+                result.append(c);
+            }
+        }
+
+        // Handle any remaining word
+        if (!word.isEmpty()) {
+            result.append(scrambleWord(word.toString(), random));
+        }
+
+        return result.toString();
+    }
+
+    /**
+     * Scrambles a single word by shuffling its characters.
+     */
+    private static String scrambleWord(String word, Random random) {
+        if (word.length() <= 1) {
+            return word;
+        }
+
+        var chars = word.toCharArray();
+        for (int i = chars.length - 1; i > 0; i--) {
+            int j = random.nextInt(i + 1);
+            char temp = chars[i];
+            chars[i] = chars[j];
+            chars[j] = temp;
+        }
+        return new String(chars);
     }
 
     /**
@@ -527,7 +583,7 @@ public class ExcelToCsvExtractor {
         return !inQuotes;
     }
 
-    private static void printResults(List<ExtractionResult> results, Path folder, boolean mergeOutput) {
+    private static void printResults(List<ExtractionResult> results, Path folder, boolean mergeOutput, boolean scrambleOutput) {
         var successes = new ArrayList<ExtractionSuccess>();
         var failures = new ArrayList<ExtractionFailure>();
 
@@ -551,7 +607,7 @@ public class ExcelToCsvExtractor {
 
         // Write merged CSV if requested
         if (mergeOutput && !successes.isEmpty()) {
-            writeMergedCsv(folder, successes);
+            writeMergedCsv(folder, successes, scrambleOutput);
         }
 
         if (!failures.isEmpty()) {
@@ -566,7 +622,7 @@ public class ExcelToCsvExtractor {
             """.formatted(successes.size(), failures.size()));
     }
 
-    private static void writeMergedCsv(Path folder, List<ExtractionSuccess> successes) {
+    private static void writeMergedCsv(Path folder, List<ExtractionSuccess> successes, boolean scrambleOutput) {
         var csvFolder = folder.resolve(CSV_FOLDER);
         var timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
         var mergedPath = csvFolder.resolve("merged_" + timestamp + ".csv");
@@ -581,7 +637,8 @@ public class ExcelToCsvExtractor {
             // Build CSV content with each entry on a new line
             var content = new StringBuilder();
             for (var value : allValues) {
-                content.append(escapeCsvValue(value))
+                var outputValue = scrambleOutput ? scrambleText(value) : value;
+                content.append(escapeCsvValue(outputValue))
                        .append(CSV_SEPARATOR)
                        .append(System.lineSeparator());
             }
