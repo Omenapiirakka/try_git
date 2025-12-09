@@ -8,6 +8,8 @@ import org.w3c.dom.Element;
 import org.w3c.dom.NodeList;
 
 import java.io.*;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -45,10 +47,6 @@ public class ExcelToCsvExtractor {
             this.separator = separator;
         }
 
-        public String getDisplayName() {
-            return displayName;
-        }
-
         public String getSeparator() {
             return separator;
         }
@@ -63,31 +61,31 @@ public class ExcelToCsvExtractor {
      * CSV encoding options for compatibility with different applications.
      */
     public enum CsvEncoding {
-        UTF_8("UTF-8", java.nio.charset.StandardCharsets.UTF_8),
-        UTF_8_BOM("UTF-8 with BOM", java.nio.charset.StandardCharsets.UTF_8),
-        ISO_8859_1("Latin-1 (ISO-8859-1)", java.nio.charset.StandardCharsets.ISO_8859_1),
-        WINDOWS_1252("Windows-1252", java.nio.charset.Charset.forName("windows-1252")),
-        UTF_16("UTF-16", java.nio.charset.StandardCharsets.UTF_16),
-        US_ASCII("US-ASCII", java.nio.charset.StandardCharsets.US_ASCII);
+        UTF_8("UTF-8", StandardCharsets.UTF_8, null),
+        UTF_8_BOM("UTF-8 with BOM", StandardCharsets.UTF_8, new byte[]{(byte) 0xEF, (byte) 0xBB, (byte) 0xBF}),
+        ISO_8859_1("Latin-1 (ISO-8859-1)", StandardCharsets.ISO_8859_1, null),
+        WINDOWS_1252("Windows-1252", Charset.forName("windows-1252"), null);
 
         private final String displayName;
-        private final java.nio.charset.Charset charset;
+        private final Charset charset;
+        private final byte[] bom;
 
-        CsvEncoding(String displayName, java.nio.charset.Charset charset) {
+        CsvEncoding(String displayName, Charset charset, byte[] bom) {
             this.displayName = displayName;
             this.charset = charset;
+            this.bom = bom;
         }
 
-        public String getDisplayName() {
-            return displayName;
-        }
-
-        public java.nio.charset.Charset getCharset() {
+        public Charset getCharset() {
             return charset;
         }
 
+        public byte[] getBom() {
+            return bom;
+        }
+
         public boolean hasBom() {
-            return this == UTF_8_BOM;
+            return bom != null;
         }
 
         @Override
@@ -196,8 +194,6 @@ public class ExcelToCsvExtractor {
             case "utf8bom", "utf8withbom" -> CsvEncoding.UTF_8_BOM;
             case "latin1", "iso88591" -> CsvEncoding.ISO_8859_1;
             case "windows1252", "cp1252", "win1252" -> CsvEncoding.WINDOWS_1252;
-            case "utf16" -> CsvEncoding.UTF_16;
-            case "ascii", "usascii" -> CsvEncoding.US_ASCII;
             default -> {
                 System.err.println("Unknown encoding: " + value + ", using UTF-8");
                 yield CsvEncoding.UTF_8;
@@ -217,7 +213,7 @@ public class ExcelToCsvExtractor {
               --merge, -m              Generate a single merged CSV file containing all data
               --delimiter, -d <type>   CSV delimiter: comma, semicolon, tab, pipe, colon, space
                                        (default: semicolon)
-              --encoding, -e <type>    CSV encoding: utf8, utf8bom, latin1, windows1252, utf16, ascii
+              --encoding, -e <type>    CSV encoding: utf8, utf8bom, latin1, windows1252
                                        (default: utf8)
 
             Supported formats:
@@ -557,20 +553,17 @@ public class ExcelToCsvExtractor {
     }
 
     /**
-     * Writes content to a file with the specified encoding.
-     * Handles BOM (Byte Order Mark) for UTF-8 with BOM encoding.
+     * Writes content to a file with the specified encoding, including BOM if required.
      */
     private static void writeWithEncoding(Path path, String content, CsvEncoding encoding) throws IOException {
+        byte[] contentBytes = content.getBytes(encoding.getCharset());
         if (encoding.hasBom()) {
-            // UTF-8 BOM: EF BB BF
-            byte[] bom = new byte[] { (byte) 0xEF, (byte) 0xBB, (byte) 0xBF };
-            byte[] contentBytes = content.getBytes(encoding.getCharset());
-            byte[] result = new byte[bom.length + contentBytes.length];
-            System.arraycopy(bom, 0, result, 0, bom.length);
-            System.arraycopy(contentBytes, 0, result, bom.length, contentBytes.length);
-            Files.write(path, result);
+            try (var out = Files.newOutputStream(path)) {
+                out.write(encoding.getBom());
+                out.write(contentBytes);
+            }
         } else {
-            Files.writeString(path, content, encoding.getCharset());
+            Files.write(path, contentBytes);
         }
     }
 
